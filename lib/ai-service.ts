@@ -5,11 +5,14 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk"
-import OpenAI    from "openai"
+import { requestCodexResponse } from "@/lib/codex-client"
+import { getValidGeminiToken }        from "@/lib/gemini-auth"
+import { getServiceAccountToken }     from "@/lib/gemini-service-account"
+import { createGeminiClient, type GeminiContent, type GeminiModel } from "@/lib/api-connectors/gemini"
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
-export type AIProvider = "anthropic" | "openai"
+export type AIProvider = "anthropic" | "openai" | "gemini"
 
 export interface AIUsage {
   input_tokens:  number
@@ -58,12 +61,6 @@ function getAnthropicClient() {
   })
 }
 
-function getOpenAIClient() {
-  const key = process.env.OPENAI_API_KEY
-  if (!key) throw new Error("OPENAI_API_KEY não configurada")
-  return new OpenAI({ apiKey: key })
-}
-
 // ─── Entry point público ──────────────────────────────────────────────────────
 
 export async function* streamChat(params: AIStreamParams): AsyncGenerator<AIChunk> {
@@ -72,6 +69,8 @@ export async function* streamChat(params: AIStreamParams): AsyncGenerator<AIChun
   try {
     if (provider === "openai") {
       yield* streamOpenAI(params)
+    } else if (provider === "gemini") {
+      yield* streamGemini(params)
     } else {
       yield* streamAnthropic(params)
     }
@@ -125,41 +124,88 @@ async function* streamAnthropic(params: AIStreamParams): AsyncGenerator<AIChunk>
   }
 }
 
-// ─── OpenAI ───────────────────────────────────────────────────────────────────
+// ─── Gemini ───────────────────────────────────────────────────────────────────
 
-async function* streamOpenAI(params: AIStreamParams): AsyncGenerator<AIChunk> {
-  const client = getOpenAIClient()
-  const model  = params.model ?? "gpt-4o-mini"
+async function* streamGemini(params: AIStreamParams): AsyncGenerator<AIChunk> {
+  // Prioridade: 1. API key  2. Service Account  3. OAuth do usuário
+  let token:           string | null = null
+  let useServiceAccount              = false
 
-  const msgs: OpenAI.Chat.ChatCompletionMessageParam[] = []
-  if (params.system) msgs.push({ role: "system", content: params.system })
-  for (const m of params.messages) msgs.push({ role: m.role, content: m.content })
+  if (!process.env.GEMINI_API_KEY) {
+    token = await getServiceAccountToken()
+    if (token) {
+      useServiceAccount = true
+    } else {
+      token = await getValidGeminiToken()
+      if (!token) {
+        yield { done: true, text: "", error: "[gemini] Sem credenciais. Configure GEMINI_API_KEY, GOOGLE_SERVICE_ACCOUNT_KEY ou autentique via /api/auth/google/login." }
+        return
+      }
+    }
+  }
 
-  const stream = await client.chat.completions.create({
+  const model  = (params.model ?? "gemini-2.5-pro") as GeminiModel
+
+  // Service account não envia X-Goog-User-Project (projeto já é implícito)
+  const client = useServiceAccount
+    ? createGeminiClient(token, {
+        defaultModel: "gemini-2.5-pro",
+        timeoutMs:    60_000,
+        apiBaseUrl:   "https://generativelanguage.googleapis.com/v1beta",
+        quotaProject: null,
+        apiKey:       null,
+      })
+    : createGeminiClient(token)
+  const contents: GeminiContent[] = params.messages.map((m) => ({
+    role:  m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }))
+
+  const result = await client.generate({
     model,
-    messages: msgs,
-    stream:   true,
+    contents,
+    systemInstruction: params.system,
   })
 
-  let inputTokens  = 0
-  let outputTokens = 0
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content
-    if (delta) yield { done: false, text: delta }
-
-    // usage vem no último chunk (quando stream_options.include_usage = true)
-    if (chunk.usage) {
-      inputTokens  = chunk.usage.prompt_tokens     ?? 0
-      outputTokens = chunk.usage.completion_tokens ?? 0
-    }
+  if (result.text) {
+    yield { done: false, text: result.text }
   }
 
   yield {
     done:     true,
     text:     "",
     model,
+    provider: "gemini",
+    usage: {
+      input_tokens:  result.usage.promptTokenCount,
+      output_tokens: result.usage.candidatesTokenCount,
+    },
+  }
+}
+
+// ─── OpenAI ───────────────────────────────────────────────────────────────────
+
+async function* streamOpenAI(params: AIStreamParams): AsyncGenerator<AIChunk> {
+  const msgs = params.messages.map((m) => ({ role: m.role, content: m.content }))
+  if (params.system) {
+    msgs.unshift({ role: "assistant", content: params.system })
+  }
+
+  const result = await requestCodexResponse(msgs)
+  if (!result.ok) {
+    yield { done: true, text: "", error: `[openai] ${result.error}` }
+    return
+  }
+
+  if (result.text) {
+    yield { done: false, text: result.text }
+  }
+
+  yield {
+    done:     true,
+    text:     "",
+    model:    result.model,
     provider: "openai",
-    usage:    { input_tokens: inputTokens, output_tokens: outputTokens },
+    usage:    result.usage,
   }
 }

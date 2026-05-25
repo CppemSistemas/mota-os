@@ -900,9 +900,9 @@ function UsersTab() {
 const PROVIDERS = ["anthropic", "openai", "gemini"] as const
 
 const MODEL_OPTIONS: Record<string, string[]> = {
-  anthropic: ["claude-sonnet-4-6", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
+  anthropic: ["claude-sonnet-4-6", "claude-opus-4-7", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
   openai:    ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
-  gemini:    ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+  gemini:    ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
 }
 
 interface AgentCfg {
@@ -923,7 +923,7 @@ function ModelsTab() {
   const [drafts, setDrafts]     = useState<Record<string, Partial<AgentCfg>>>({})
   const [expanded, setExpanded] = useState<string | null>(null)
   const [saving, setSaving]     = useState<string | null>(null)
-  const [feedback, setFeedback] = useState<Record<string, "ok" | "error" | null>>({})
+  const [feedback, setFeedback] = useState<Record<string, { kind: "ok" | "error"; msg?: string } | null>>({})
   const [loading, setLoading]   = useState(true)
   const [fetchErr, setFetchErr] = useState<string | null>(null)
 
@@ -978,10 +978,11 @@ function ModelsTab() {
         prev.map((c) => c.agent_id === agentId ? { ...c, ...d, updated_at: json.updated_at ?? c.updated_at } : c)
       )
       setDrafts((prev) => { const n = { ...prev }; delete n[agentId]; return n })
-      setFeedback((prev) => ({ ...prev, [agentId]: "ok" }))
+      setFeedback((prev) => ({ ...prev, [agentId]: { kind: "ok" } }))
       setTimeout(() => setFeedback((prev) => ({ ...prev, [agentId]: null })), 2500)
-    } catch {
-      setFeedback((prev) => ({ ...prev, [agentId]: "error" }))
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erro ao salvar"
+      setFeedback((prev) => ({ ...prev, [agentId]: { kind: "error", msg } }))
     } finally {
       setSaving(null)
     }
@@ -1053,12 +1054,12 @@ function ModelsTab() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {fb === "ok" && (
+                  {fb?.kind === "ok" && (
                     <span className="text-[10px] flex items-center gap-0.5" style={{ color: "#16a34a" }}>
                       <Check size={10} /> Salvo
                     </span>
                   )}
-                  {fb === "error" && (
+                  {fb?.kind === "error" && (
                     <span className="text-[10px]" style={{ color: "#ef4444" }}>Erro</span>
                   )}
                   <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
@@ -1169,8 +1170,8 @@ function ModelsTab() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {fb === "error" && (
-                        <span className="text-[11px]" style={{ color: "#ef4444" }}>Erro ao salvar</span>
+                      {fb?.kind === "error" && (
+                        <span className="text-[11px]" style={{ color: "#ef4444" }}>{fb.msg ?? "Erro ao salvar"}</span>
                       )}
                       <button
                         onClick={() => cancelDraft(cfg.agent_id)}
@@ -1226,15 +1227,15 @@ const APIS_CONFIG: Array<{
 }> = [
   {
     id: "anthropic", label: "Anthropic (Claude)", color: "#f97316", pending: false,
-    fields: [{ key: "api_key", label: "API Key", secret: true, placeholder: "sk-ant-api03-..." }],
+    fields: [],
   },
   {
     id: "openai", label: "OpenAI", color: "#16a34a", pending: false,
-    fields: [{ key: "api_key", label: "API Key", secret: true, placeholder: "sk-proj-..." }],
+    fields: [],
   },
   {
     id: "gemini", label: "Google Gemini", color: "#4285f4", pending: false,
-    fields: [{ key: "api_key", label: "API Key", secret: true, placeholder: "AIzaSy..." }],
+    fields: [],
   },
   {
     id: "supabase", label: "Supabase", color: "#3ecf8e", pending: false,

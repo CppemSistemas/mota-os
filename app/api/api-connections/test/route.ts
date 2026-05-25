@@ -3,7 +3,9 @@ import { createClient }      from "@/lib/supabase-server"
 import { createAdminClient } from "@/lib/supabase-admin"
 import { logActivity }       from "@/lib/activity-logger"
 import Anthropic from "@anthropic-ai/sdk"
-import OpenAI    from "openai"
+import { requestCodexResponse }   from "@/lib/codex-client"
+import { getServiceAccountToken } from "@/lib/gemini-service-account"
+import { getValidGeminiToken }    from "@/lib/gemini-auth"
 
 const PROVIDER_NAMES: Record<string, string> = {
   anthropic:    "Anthropic (Claude)",
@@ -58,9 +60,10 @@ export async function POST(req: NextRequest) {
     try {
       switch (provider) {
         case "anthropic": {
-          const apiKey = config.api_key
-          if (!apiKey) throw new Error("api_key não configurada")
-          const client = new Anthropic({ apiKey })
+          const client = new Anthropic({
+            baseURL: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+            maxRetries: 1,
+          })
           await client.messages.create({
             model:    "claude-3-5-haiku-latest",
             max_tokens: 1,
@@ -71,22 +74,59 @@ export async function POST(req: NextRequest) {
         }
 
         case "openai": {
-          const apiKey = config.api_key
-          if (!apiKey) throw new Error("api_key não configurada")
-          const client = new OpenAI({ apiKey })
-          await client.models.list()
+          const test = await requestCodexResponse([{ role: "user", content: "ping" }])
+          if (!test.ok) {
+            throw new Error(test.error || "OAuth GPT não autenticado")
+          }
           testOk = true
           break
         }
 
         case "gemini": {
-          const apiKey = config.api_key
-          if (!apiKey) throw new Error("api_key não configurada")
+          // Tenta service account → OAuth → API key
+          let geminiToken: string | null = null
+          let authMode = ""
+
+          const apiKey = process.env.GEMINI_API_KEY ?? null
+          if (apiKey) {
+            authMode = "api-key"
+          } else {
+            geminiToken = await getServiceAccountToken()
+            if (geminiToken) {
+              authMode = "service-account"
+            } else {
+              geminiToken = await getValidGeminiToken()
+              if (geminiToken) authMode = "oauth"
+            }
+          }
+
+          if (!apiKey && !geminiToken) {
+            throw new Error("Sem credenciais Gemini. Configure GOOGLE_SERVICE_ACCOUNT_KEY no servidor.")
+          }
+
+          const headers: Record<string, string> = { "Content-Type": "application/json" }
+          if (apiKey) {
+            headers["X-Goog-Api-Key"] = apiKey
+          } else {
+            headers["Authorization"] = `Bearer ${geminiToken}`
+          }
+
           const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: "ping" }] }],
+              }),
+            },
           )
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          if (!res.ok) {
+            const body = await res.text()
+            throw new Error(`Gemini ${res.status}: ${body}`)
+          }
           testOk = true
+          errMsg = `Autenticado via ${authMode}`
           break
         }
 

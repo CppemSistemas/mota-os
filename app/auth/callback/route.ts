@@ -6,6 +6,8 @@ export async function GET(request: Request) {
   const code = searchParams.get("code")
   const next = searchParams.get("next") ?? "/dashboard"
 
+  // Este callback é exclusivo para Supabase Auth.
+  // GPT OAuth é tratado em /api/auth/gpt/callback.
   if (code) {
     const supabase = await createClient()
     const { error } = await supabase.auth.exchangeCodeForSession(code)
