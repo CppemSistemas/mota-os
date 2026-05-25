@@ -897,12 +897,13 @@ function UsersTab() {
 
 /* ─── Models ─── */
 
-const PROVIDERS = ["anthropic", "openai", "gemini"] as const
+const PROVIDERS = ["anthropic", "openai", "gemini", "deepseek"] as const
 
 const MODEL_OPTIONS: Record<string, string[]> = {
   anthropic: ["claude-sonnet-4-6", "claude-opus-4-7", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
   openai:    ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
   gemini:    ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+  deepseek:  ["deepseek-chat", "deepseek-reasoner"],
 }
 
 interface AgentCfg {
@@ -1230,7 +1231,11 @@ const APIS_CONFIG: Array<{
     fields: [],
   },
   {
-    id: "openai", label: "OpenAI", color: "#16a34a", pending: false,
+    id: "openai", label: "OpenAI (GPT)", color: "#16a34a", pending: false,
+    fields: [],
+  },
+  {
+    id: "deepseek", label: "DeepSeek", color: "#4d6bfe", pending: false,
     fields: [],
   },
   {

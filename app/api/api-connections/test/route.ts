@@ -3,13 +3,15 @@ import { createClient }      from "@/lib/supabase-server"
 import { createAdminClient } from "@/lib/supabase-admin"
 import { logActivity }       from "@/lib/activity-logger"
 import Anthropic from "@anthropic-ai/sdk"
+import OpenAI    from "openai"
 import { requestCodexResponse }   from "@/lib/codex-client"
 import { getServiceAccountToken } from "@/lib/gemini-service-account"
 import { getValidGeminiToken }    from "@/lib/gemini-auth"
 
 const PROVIDER_NAMES: Record<string, string> = {
   anthropic:    "Anthropic (Claude)",
-  openai:       "OpenAI",
+  openai:       "OpenAI (GPT)",
+  deepseek:     "DeepSeek",
   gemini:       "Google Gemini",
   supabase:     "Supabase",
   rocketchat:   "Rocket.Chat",
@@ -74,10 +76,34 @@ export async function POST(req: NextRequest) {
         }
 
         case "openai": {
-          const test = await requestCodexResponse([{ role: "user", content: "ping" }])
-          if (!test.ok) {
-            throw new Error(test.error || "OAuth GPT não autenticado")
+          const openaiKey = process.env.OPENAI_API_KEY
+          if (openaiKey) {
+            const client = new OpenAI({ apiKey: openaiKey })
+            await client.chat.completions.create({
+              model:      "gpt-4o-mini",
+              messages:   [{ role: "user", content: "ping" }],
+              max_tokens: 1,
+            })
+            testOk = true
+            errMsg = "Autenticado via OPENAI_API_KEY"
+          } else {
+            const test = await requestCodexResponse([{ role: "user", content: "ping" }])
+            if (!test.ok) throw new Error(test.error || "OAuth GPT não autenticado")
+            testOk = true
+            errMsg = "Autenticado via OAuth/Codex"
           }
+          break
+        }
+
+        case "deepseek": {
+          const deepseekKey = process.env.DEEPSEEK_API_KEY
+          if (!deepseekKey) throw new Error("DEEPSEEK_API_KEY não configurado no servidor")
+          const client = new OpenAI({ apiKey: deepseekKey, baseURL: "https://api.deepseek.com/v1" })
+          await client.chat.completions.create({
+            model:      "deepseek-chat",
+            messages:   [{ role: "user", content: "ping" }],
+            max_tokens: 1,
+          })
           testOk = true
           break
         }

@@ -5,6 +5,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk"
+import OpenAI    from "openai"
 import { requestCodexResponse } from "@/lib/codex-client"
 import { getValidGeminiToken }        from "@/lib/gemini-auth"
 import { getServiceAccountToken }     from "@/lib/gemini-service-account"
@@ -12,7 +13,7 @@ import { createGeminiClient, type GeminiContent, type GeminiModel } from "@/lib/
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
-export type AIProvider = "anthropic" | "openai" | "gemini"
+export type AIProvider = "anthropic" | "openai" | "gemini" | "deepseek"
 
 export interface AIUsage {
   input_tokens:  number
@@ -71,6 +72,8 @@ export async function* streamChat(params: AIStreamParams): AsyncGenerator<AIChun
       yield* streamOpenAI(params)
     } else if (provider === "gemini") {
       yield* streamGemini(params)
+    } else if (provider === "deepseek") {
+      yield* streamDeepseek(params)
     } else {
       yield* streamAnthropic(params)
     }
@@ -183,13 +186,64 @@ async function* streamGemini(params: AIStreamParams): AsyncGenerator<AIChunk> {
   }
 }
 
+// ─── OpenAI-compat helper (GPT + DeepSeek) ──────────────────────────────────────────────
+
+async function* streamOpenAICompat(
+  params:   AIStreamParams,
+  apiKey:   string,
+  baseURL:  string,
+  provider: AIProvider,
+  defaultModel: string,
+): AsyncGenerator<AIChunk> {
+  const client = new OpenAI({ apiKey, baseURL })
+  const model  = params.model ?? defaultModel
+
+  const messages = [
+    ...(params.system ? [{ role: "system" as const, content: params.system }] : []),
+    ...params.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+  ]
+
+  const stream = await client.chat.completions.create({
+    model,
+    messages,
+    stream:         true,
+    stream_options: { include_usage: true },
+  })
+
+  let inputTokens  = 0
+  let outputTokens = 0
+
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content ?? ""
+    if (text) yield { done: false, text }
+    if (chunk.usage) {
+      inputTokens  = chunk.usage.prompt_tokens
+      outputTokens = chunk.usage.completion_tokens
+    }
+  }
+
+  yield {
+    done:     true,
+    text:     "",
+    model,
+    provider,
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  }
+}
+
 // ─── OpenAI ───────────────────────────────────────────────────────────────────
 
 async function* streamOpenAI(params: AIStreamParams): AsyncGenerator<AIChunk> {
-  const msgs = params.messages.map((m) => ({ role: m.role, content: m.content }))
-  if (params.system) {
-    msgs.unshift({ role: "assistant", content: params.system })
+  const apiKey = process.env.OPENAI_API_KEY
+
+  if (apiKey) {
+    yield* streamOpenAICompat(params, apiKey, "https://api.openai.com/v1", "openai", "gpt-4o")
+    return
   }
+
+  // Fallback: OAuth/Codex
+  const msgs = params.messages.map((m) => ({ role: m.role, content: m.content }))
+  if (params.system) msgs.unshift({ role: "assistant", content: params.system })
 
   const result = await requestCodexResponse(msgs)
   if (!result.ok) {
@@ -197,9 +251,7 @@ async function* streamOpenAI(params: AIStreamParams): AsyncGenerator<AIChunk> {
     return
   }
 
-  if (result.text) {
-    yield { done: false, text: result.text }
-  }
+  if (result.text) yield { done: false, text: result.text }
 
   yield {
     done:     true,
@@ -208,4 +260,15 @@ async function* streamOpenAI(params: AIStreamParams): AsyncGenerator<AIChunk> {
     provider: "openai",
     usage:    result.usage,
   }
+}
+
+// ─── DeepSeek ───────────────────────────────────────────────────────────────────
+
+async function* streamDeepseek(params: AIStreamParams): AsyncGenerator<AIChunk> {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) {
+    yield { done: true, text: "", error: "[deepseek] Configure DEEPSEEK_API_KEY no servidor." }
+    return
+  }
+  yield* streamOpenAICompat(params, apiKey, "https://api.deepseek.com/v1", "deepseek", "deepseek-chat")
 }
